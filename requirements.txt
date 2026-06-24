@@ -3,6 +3,11 @@ requests==2.33.1
 beautifulsoup4==4.14.3
 
 # Transformation
+# NOTE: install setuptools<81 BEFORE pyspark on Python 3.12 -- PySpark
+# 3.5.1's toPandas() still imports distutils internally, which was removed
+# from the stdlib in 3.12. setuptools<81 still vendors a distutils shim.
+# See README "Known gotcha" section.
+setuptools<81
 pyspark==3.5.1
 deltalake==1.6.1
 pyarrow>=14.0.0

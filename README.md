@@ -148,6 +148,21 @@ python silver/transform_silver.py
 python gold/build_gold.py
 ```
 
+### Known gotcha: PySpark 3.5.1 + Python 3.12 + `toPandas()`
+
+`distutils` was removed from the Python standard library in 3.12, but
+PySpark 3.5.1's `toPandas()` path (used by `delta_io.write_delta_table`)
+still imports it internally on first call. Some environments have a
+leftover `distutils` shim available via an older `setuptools` install and
+never notice; a clean Python 3.12 environment (e.g. a fresh venv, or a
+fresh GitHub Actions runner) does not, and the first bronze write fails
+with `ModuleNotFoundError: No module named 'distutils'`.
+
+Fix: `pip install "setuptools<81"` before installing PySpark -- setuptools
+versions below 81 still vendor the `distutils` shim for 3.12. This is
+already pinned in `.github/workflows/ci.yml`; if you hit this locally,
+install it the same way.
+
 ## Running the orchestration locally
 
 ```bash

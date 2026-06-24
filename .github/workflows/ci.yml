@@ -67,7 +67,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
+          pip install "setuptools<81" pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
           pip install pytest
 
       - name: Run unit tests
@@ -94,7 +94,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
+          pip install "setuptools<81" pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
 
       - name: Run ingestion (fixture source - no network egress needed)
         env:
