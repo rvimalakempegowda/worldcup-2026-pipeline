@@ -1,0 +1,76 @@
+name: Airflow DAG validation
+
+# Separate from the main pipeline CI workflow because it has a much heavier
+# dependency footprint (apache-airflow pulls in ~80 packages) and a
+# different failure mode: this catches "the DAG file has a syntax/import
+# error and the scheduler would refuse to load it" before merge, rather
+# than testing pipeline logic.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "airflow_dags/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "airflow_dags/**"
+
+jobs:
+  validate-dags:
+    name: Validate DAGs import and parse
+    runs-on: ubuntu-latest
+    env:
+      AIRFLOW_HOME: ${{ github.workspace }}/airflow_home
+      AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/airflow_dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "sqlite:////tmp/airflow_ci.db"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Airflow (with official constraints)
+        run: |
+          pip install "apache-airflow==3.2.2" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.2.2/constraints-3.12.txt"
+
+      - name: Initialize Airflow metadata DB
+        run: airflow db migrate
+
+      - name: Import every DAG file directly (catches syntax/import errors)
+        run: |
+          python - <<'EOF'
+          import importlib.util
+          import sys
+          from pathlib import Path
+
+          dag_dir = Path("airflow_dags")
+          failures = []
+
+          for dag_file in sorted(dag_dir.glob("*.py")):
+              spec = importlib.util.spec_from_file_location(dag_file.stem, dag_file)
+              module = importlib.util.module_from_spec(spec)
+              try:
+                  spec.loader.exec_module(module)
+                  print(f"OK: {dag_file}")
+              except Exception as exc:
+                  print(f"FAILED: {dag_file} -> {exc}")
+                  failures.append(dag_file)
+
+          if failures:
+              print(f"\n{len(failures)} DAG file(s) failed to import: {failures}")
+              sys.exit(1)
+          EOF
+
+      - name: Confirm DAGs are registered with no import errors
+        run: |
+          airflow dags reserialize
+          airflow dags list-import-errors
+
+      - name: List registered DAGs
+        run: airflow dags list

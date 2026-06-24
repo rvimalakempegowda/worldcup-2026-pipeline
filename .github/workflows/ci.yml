@@ -1,0 +1,162 @@
+name: CI
+
+# Runs on every push to main and every pull request targeting main.
+# Three independent jobs:
+#   1. lint      - ruff + black --check, fails fast on style/import issues
+#   2. test      - pytest unit tests against the silver/ingestion logic
+#   3. pipeline-smoke-test - runs the real bronze -> silver -> gold chain
+#      end-to-end against the fixture data source and asserts the gold
+#      tables come out with sane shapes. This is the test that would have
+#      caught the all-null-column Spark type inference bug we hit while
+#      building delta_io.py -- unit tests alone did not, because the bug
+#      only showed up when real bronze-shaped data flowed through the
+#      full chain.
+#
+# lint and test run in parallel; pipeline-smoke-test only runs if both pass,
+# since there's no point spinning up Spark for 2-3 minutes if a lint error
+# would have failed the build anyway.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint (ruff + black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install lint tools
+        run: pip install ruff black
+
+      - name: Run ruff
+        run: ruff check .
+
+      - name: Run black --check
+        run: black --check .
+
+  test:
+    name: Unit tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Set up Java (required by PySpark)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Install dependencies
+        run: |
+          pip install pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
+          pip install pytest
+
+      - name: Run unit tests
+        run: pytest tests/ -v
+
+  pipeline-smoke-test:
+    name: Pipeline smoke test (bronze -> silver -> gold)
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Set up Java (required by PySpark)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Install dependencies
+        run: |
+          pip install pyspark==3.5.1 deltalake==1.6.1 pyarrow pandas requests beautifulsoup4
+
+      - name: Run ingestion (fixture source - no network egress needed)
+        env:
+          WORLDCUP_SOURCE: fixture
+        run: python ingestion/run_ingestion.py
+
+      - name: Generate sample live match events
+        run: python ingestion/live_event_simulator.py --count 10
+
+      - name: Load bronze
+        run: python bronze/load_bronze.py
+
+      - name: Transform silver
+        run: python silver/transform_silver.py
+
+      - name: Build gold
+        run: python gold/build_gold.py
+
+      - name: Validate gold table contracts
+        run: |
+          python - <<'EOF'
+          import sys
+          from deltalake import DeltaTable
+
+          from config import (
+              GOLD_GOALS_BY_MATCHDAY,
+              GOLD_STANDINGS_CURRENT,
+              GOLD_TEAM_FORM,
+              GOLD_TOP_SCORERS,
+          )
+
+          checks = []
+
+          standings = DeltaTable(str(GOLD_STANDINGS_CURRENT)).to_pandas()
+          checks.append(("group_standings_current not empty", len(standings) > 0))
+          checks.append(("group_standings_current has no null teams", standings["team"].notna().all()))
+          checks.append(("points are non-negative", (standings["points"] >= 0).all()))
+
+          scorers = DeltaTable(str(GOLD_TOP_SCORERS)).to_pandas()
+          checks.append(("top_scorers not empty", len(scorers) > 0))
+
+          form = DeltaTable(str(GOLD_TEAM_FORM)).to_pandas()
+          checks.append(("team_form not empty", len(form) > 0))
+
+          trend = DeltaTable(str(GOLD_GOALS_BY_MATCHDAY)).to_pandas()
+          checks.append(("goals_by_matchday not empty", len(trend) > 0))
+
+          failed = [name for name, ok in checks if not ok]
+          for name, ok in checks:
+              print(f"{'PASS' if ok else 'FAIL'}: {name}")
+
+          if failed:
+              print(f"\n{len(failed)} contract check(s) failed: {failed}")
+              sys.exit(1)
+
+          print(f"\nAll {len(checks)} gold table contract checks passed.")
+          EOF
+
+      - name: Upload gold tables as build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-tables
+          path: data/gold/
+          retention-days: 7

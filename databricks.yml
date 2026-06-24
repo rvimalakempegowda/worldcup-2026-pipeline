@@ -1,0 +1,106 @@
+# Databricks Asset Bundle definition for the World Cup 2026 pipeline.
+#
+# This is the deployment artifact that ties the bronze/silver/gold scripts
+# in this repo to scheduled Databricks Jobs, mirroring what the Airflow
+# DAGs do locally. In a Databricks-hosted deployment, either this bundle
+# or the Airflow DAGs (via DatabricksSubmitRunOperator) drive execution --
+# not both. The bundle is the natural choice when Databricks Workflows is
+# the orchestrator of record; Airflow is the natural choice when a single
+# orchestration layer needs to span multiple systems (this pipeline plus
+# other, non-Databricks workloads), which is the more common shape on a
+# data platform team and the reason this repo leads with Airflow.
+#
+# Deploy with:
+#   databricks bundle deploy -t dev
+#   databricks bundle run worldcup_live_job -t dev
+
+bundle:
+  name: worldcup-2026-pipeline
+
+variables:
+  data_root:
+    description: ADLS Gen2 root path for bronze/silver/gold tables
+    default: "abfss://worldcup@<storage_account>.dfs.core.windows.net"
+
+resources:
+  jobs:
+    worldcup_live_job:
+      name: "worldcup_live_pipeline"
+      tags:
+        project: worldcup2026
+        layer: bronze-silver-gold
+      schedule:
+        quartz_cron_expression: "0 */5 * * * ?"
+        timezone_id: "UTC"
+      tasks:
+        - task_key: run_ingestion
+          spark_python_task:
+            python_file: ../ingestion/run_ingestion.py
+          environment_key: default
+
+        - task_key: load_bronze
+          depends_on:
+            - task_key: run_ingestion
+          spark_python_task:
+            python_file: ../bronze/load_bronze.py
+          environment_key: default
+
+        - task_key: transform_silver
+          depends_on:
+            - task_key: load_bronze
+          spark_python_task:
+            python_file: ../silver/transform_silver.py
+          environment_key: default
+
+        - task_key: build_gold
+          depends_on:
+            - task_key: transform_silver
+          spark_python_task:
+            python_file: ../gold/build_gold.py
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - pyspark
+              - requests
+              - beautifulsoup4
+
+    worldcup_daily_maintenance_job:
+      name: "worldcup_daily_maintenance"
+      tags:
+        project: worldcup2026
+        layer: maintenance
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "UTC"
+      tasks:
+        - task_key: refresh_reference_data
+          spark_python_task:
+            python_file: ../ingestion/run_ingestion.py
+          environment_key: default
+
+        - task_key: rebuild_gold
+          depends_on:
+            - task_key: refresh_reference_data
+          spark_python_task:
+            python_file: ../gold/build_gold.py
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - pyspark
+              - requests
+              - beautifulsoup4
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production

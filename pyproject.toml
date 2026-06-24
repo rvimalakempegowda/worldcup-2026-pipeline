@@ -1,0 +1,22 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+exclude = ["airflow_home", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line length handled by black; avoid double-reporting
+]
+
+[tool.black]
+line-length = 110
+target-version = ["py312"]
+extend-exclude = "airflow_home|data"

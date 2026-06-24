@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+airflow_home/
+data/raw/
+data/bronze/
+data/silver/
+data/gold/
+
+*.egg-info/
+.pytest_cache/
+.DS_Store

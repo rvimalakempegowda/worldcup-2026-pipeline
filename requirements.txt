@@ -1,0 +1,25 @@
+# Ingestion
+requests==2.33.1
+beautifulsoup4==4.14.3
+
+# Transformation
+pyspark==3.5.1
+deltalake==1.6.1
+pyarrow>=14.0.0
+pandas
+
+# Orchestration
+apache-airflow==3.2.2
+# Install with the official constraints file to avoid dependency conflicts:
+#   pip install -r requirements.txt \
+#     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.2.2/constraints-3.12.txt"
+
+# Dashboard
+streamlit
+
+# Testing
+pytest
+
+# Lint / format (used by CI, see .github/workflows/ci.yml)
+ruff
+black
