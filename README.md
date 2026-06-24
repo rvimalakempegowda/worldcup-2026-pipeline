@@ -54,7 +54,21 @@ Scraper / API client  -->  Bronze (raw)  -->  Silver (cleaned, SCD2)  -->  Gold 
   real teams/fixtures, used to drive the live dashboard demo deterministically
   in an interview setting, independent of whether a real match is in progress.
 
-- **Dashboard** (`dashboard/`): Streamlit app reading from the Gold layer.
+- **Dashboard** (`dashboard/`): Streamlit app reading exclusively from the
+  gold layer (plus silver `match_events` for the live feed) -- no business
+  logic lives in the dashboard itself, only presentation. `data_access.py`
+  reads Delta tables straight into pandas via delta-rs (no Spark session at
+  read time, since gold is already small and pre-aggregated -- the same
+  reason a real BI tool connects to gold tables directly rather than
+  through a Spark cluster). Visual theme is a dark "broadcast control
+  room": pipeline-stage status strip, a live-match event feed with a
+  pulsing on-air indicator, group standings with a tier-ranked table,
+  top-scorers and goals-per-matchday charts, and a 10-second auto-refresh
+  so it visibly updates during a live demo. Verified by actually launching
+  the app and capturing real screenshots (Playwright) rather than just
+  confirming the server started -- which caught a Streamlit 1.58 API
+  deprecation (`use_container_width` -> `width="stretch"`) that a
+  startup-log check alone would have missed.
 
 - **Orchestration** (`airflow_dags/`): two Airflow 3.x TaskFlow DAGs.
   - `worldcup_live_pipeline`: runs every 5 minutes. A `@task.short_circuit`

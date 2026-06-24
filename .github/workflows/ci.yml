@@ -153,6 +153,12 @@ jobs:
           print(f"\nAll {len(checks)} gold table contract checks passed.")
           EOF
 
+      - name: Smoke-test dashboard syntax and imports
+        run: |
+          pip install "setuptools<81" streamlit streamlit-autorefresh plotly
+          python -c "import ast; ast.parse(open('dashboard/app.py').read()); print('dashboard/app.py: syntax OK')"
+          python -c "import sys; sys.path.insert(0, '.'); from dashboard import data_access; print('dashboard/data_access.py: imports OK')"
+
       - name: Upload gold tables as build artifact
         if: always()
         uses: actions/upload-artifact@v4

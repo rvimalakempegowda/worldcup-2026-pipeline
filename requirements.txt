@@ -21,6 +21,8 @@ apache-airflow==3.2.2
 
 # Dashboard
 streamlit
+streamlit-autorefresh
+plotly
 
 # Testing
 pytest

@@ -12,3 +12,5 @@ data/gold/
 *.egg-info/
 .pytest_cache/
 .DS_Store
+
+.streamlit/secrets.toml
