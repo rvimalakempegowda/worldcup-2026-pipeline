@@ -1,8 +1,5 @@
 # Databricks Asset Bundle — World Cup 2026 pipeline.
 #
-# Orchestrates bronze/silver/gold jobs via Databricks Workflows and hosts
-# the Streamlit dashboard as a Databricks App backed by Unity Catalog volumes.
-#
 # Deploy:
 #   databricks bundle deploy -t dev
 #   databricks bundle deploy -t prod
@@ -12,8 +9,8 @@
 #
 # Prerequisites:
 #   1. A Unity Catalog catalog + schema (defaults: main / worldcup2026_dev)
-#   2. An External Volume or Managed Volume at the path in `volume` var
-#   3. databricks CLI >= 0.212 (`databricks --version`)
+#   2. A Volume at /Volumes/<catalog>/<schema>/<volume>
+#   3. databricks CLI >= 0.212
 
 bundle:
   name: worldcup-2026-pipeline
@@ -23,34 +20,27 @@ variables:
     description: Unity Catalog catalog name
     default: main
   schema:
-    description: Unity Catalog schema (separate per target by default)
+    description: Unity Catalog schema
     default: worldcup2026_dev
   volume:
-    description: Unity Catalog volume name inside the schema
+    description: Unity Catalog volume name
     default: pipeline_data
   ingestion_source:
     description: "'wikipedia' for live scrape, 'fixture' for offline snapshot"
-    default: wikipedia
-
-# Derived path used by every task: /Volumes/<catalog>/<schema>/<volume>
-# Set via WORLDCUP_DATA_ROOT env var on each cluster so config.py picks it up
-# automatically without any code change.
+    default: fixture
 
 resources:
 
-  # ── Databricks App ────────────────────────────────────────────────────────
+  # ── Databricks App ─────────────────────────────────────────────────────────
   apps:
     worldcup_dashboard:
       name: worldcup-2026-dashboard
       description: "World Cup 2026 live analytics — Streamlit on Databricks Apps"
       source_code_path: dashboard
 
-  # ── Jobs ──────────────────────────────────────────────────────────────────
+  # ── Jobs ───────────────────────────────────────────────────────────────────
   jobs:
 
-    # Live pipeline: ingest → bronze → silver → gold, every 5 minutes.
-    # The run_ingestion step short-circuits on its own when no matches are
-    # live (same short-circuit logic as the Airflow DAG).
     worldcup_live_job:
       name: worldcup_live_pipeline
       tags:
@@ -61,17 +51,8 @@ resources:
         quartz_cron_expression: "0 */5 * * * ?"
         timezone_id: UTC
 
-      environments:
-        - environment_key: default
-          spec:
-            client: "2"
-            dependencies:
-              - requests==2.33.1
-              - beautifulsoup4==4.14.3
-
       tasks:
         - task_key: run_ingestion
-          environment_key: default
           spark_python_task:
             python_file: ingestion/run_ingestion.py
             parameters:
@@ -81,7 +62,6 @@ resources:
         - task_key: load_bronze
           depends_on:
             - task_key: run_ingestion
-          environment_key: default
           spark_python_task:
             python_file: bronze/load_bronze.py
             parameters:
@@ -90,7 +70,6 @@ resources:
         - task_key: transform_silver
           depends_on:
             - task_key: load_bronze
-          environment_key: default
           spark_python_task:
             python_file: silver/transform_silver.py
             parameters:
@@ -99,13 +78,11 @@ resources:
         - task_key: build_gold
           depends_on:
             - task_key: transform_silver
-          environment_key: default
           spark_python_task:
             python_file: gold/build_gold.py
             parameters:
               - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
 
-    # Daily maintenance: refresh reference data, rebuild gold, quality checks.
     worldcup_daily_maintenance_job:
       name: worldcup_daily_maintenance
       tags:
@@ -116,17 +93,8 @@ resources:
         quartz_cron_expression: "0 0 6 * * ?"
         timezone_id: UTC
 
-      environments:
-        - environment_key: default
-          spec:
-            client: "2"
-            dependencies:
-              - requests==2.33.1
-              - beautifulsoup4==4.14.3
-
       tasks:
         - task_key: refresh_reference_data
-          environment_key: default
           spark_python_task:
             python_file: ingestion/run_ingestion.py
             parameters:
@@ -136,7 +104,6 @@ resources:
         - task_key: rebuild_gold
           depends_on:
             - task_key: refresh_reference_data
-          environment_key: default
           spark_python_task:
             python_file: gold/build_gold.py
             parameters:
@@ -148,7 +115,7 @@ targets:
     default: true
     variables:
       schema: worldcup2026_dev
-      ingestion_source: fixture   # safe default for dev; override to wikipedia for live tests
+      ingestion_source: fixture
 
   prod:
     mode: production
