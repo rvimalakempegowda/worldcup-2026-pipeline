@@ -1,17 +1,30 @@
 """
 Shared configuration for the World Cup 2026 pipeline.
 
-In a Databricks deployment, LOCAL_DATA_ROOT becomes an ADLS Gen2 path, e.g.:
-    "abfss://worldcup@<storage_account>.dfs.core.windows.net"
-Everything else (table names, partitioning) stays the same.
+In a Databricks deployment LOCAL_DATA_ROOT is a Unity Catalog volume path, e.g.:
+    /Volumes/main/worldcup2026/pipeline_data
+Pass it via --data-root=<path> (Databricks job parameter) or the
+WORLDCUP_DATA_ROOT env var. Local runs fall back to <project_root>/data.
 """
 
 import os
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-LOCAL_DATA_ROOT = Path(os.environ.get("WORLDCUP_DATA_ROOT", PROJECT_ROOT / "data"))
+
+def _arg(name: str) -> str | None:
+    """Return the value of --name=value or --name value from sys.argv, or None."""
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith(f"--{name}="):
+            return arg.split("=", 1)[1]
+        if arg == f"--{name}" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return None
+
+
+LOCAL_DATA_ROOT = Path(_arg("data-root") or os.environ.get("WORLDCUP_DATA_ROOT", PROJECT_ROOT / "data"))
 
 RAW_DIR = LOCAL_DATA_ROOT / "raw"
 BRONZE_DIR = LOCAL_DATA_ROOT / "bronze"
@@ -37,7 +50,7 @@ GOLD_TEAM_FORM = GOLD_DIR / "team_form"
 GOLD_GOALS_BY_MATCHDAY = GOLD_DIR / "goals_by_matchday"
 
 # Ingestion source: "fixture" (offline-safe, default) or "wikipedia" (live scrape)
-INGESTION_SOURCE = os.environ.get("WORLDCUP_SOURCE", "fixture")
+INGESTION_SOURCE = _arg("source") or os.environ.get("WORLDCUP_SOURCE", "fixture")
 
 WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/2026_FIFA_World_Cup"
 

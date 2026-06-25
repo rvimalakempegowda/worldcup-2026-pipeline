@@ -61,16 +61,6 @@ resources:
         quartz_cron_expression: "0 */5 * * * ?"
         timezone_id: UTC
 
-      job_clusters:
-        - job_cluster_key: pipeline_cluster
-          new_cluster:
-            spark_version: 15.4.x-scala2.12
-            node_type_id: Standard_DS3_v2
-            num_workers: 1
-            spark_env_vars:
-              WORLDCUP_DATA_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}
-              WORLDCUP_SOURCE: ${var.ingestion_source}
-
       environments:
         - environment_key: default
           spec:
@@ -81,34 +71,39 @@ resources:
 
       tasks:
         - task_key: run_ingestion
-          job_cluster_key: pipeline_cluster
           environment_key: default
           spark_python_task:
             python_file: ingestion/run_ingestion.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
+              - "--source=${var.ingestion_source}"
 
         - task_key: load_bronze
           depends_on:
             - task_key: run_ingestion
-          job_cluster_key: pipeline_cluster
           environment_key: default
           spark_python_task:
             python_file: bronze/load_bronze.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
 
         - task_key: transform_silver
           depends_on:
             - task_key: load_bronze
-          job_cluster_key: pipeline_cluster
           environment_key: default
           spark_python_task:
             python_file: silver/transform_silver.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
 
         - task_key: build_gold
           depends_on:
             - task_key: transform_silver
-          job_cluster_key: pipeline_cluster
           environment_key: default
           spark_python_task:
             python_file: gold/build_gold.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
 
     # Daily maintenance: refresh reference data, rebuild gold, quality checks.
     worldcup_daily_maintenance_job:
@@ -121,16 +116,6 @@ resources:
         quartz_cron_expression: "0 0 6 * * ?"
         timezone_id: UTC
 
-      job_clusters:
-        - job_cluster_key: maintenance_cluster
-          new_cluster:
-            spark_version: 15.4.x-scala2.12
-            node_type_id: Standard_DS3_v2
-            num_workers: 1
-            spark_env_vars:
-              WORLDCUP_DATA_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}
-              WORLDCUP_SOURCE: ${var.ingestion_source}
-
       environments:
         - environment_key: default
           spec:
@@ -141,18 +126,21 @@ resources:
 
       tasks:
         - task_key: refresh_reference_data
-          job_cluster_key: maintenance_cluster
           environment_key: default
           spark_python_task:
             python_file: ingestion/run_ingestion.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
+              - "--source=${var.ingestion_source}"
 
         - task_key: rebuild_gold
           depends_on:
             - task_key: refresh_reference_data
-          job_cluster_key: maintenance_cluster
           environment_key: default
           spark_python_task:
             python_file: gold/build_gold.py
+            parameters:
+              - "--data-root=/Volumes/${var.catalog}/${var.schema}/${var.volume}"
 
 targets:
   dev:
