@@ -1,41 +1,52 @@
 """
-Delta Lake I/O for Spark DataFrames, backed by delta-rs (the `deltalake`
-PyPI package) instead of Spark's native JVM Delta connector.
+Delta Lake I/O for Spark DataFrames.
 
-Why: Spark's native Delta support (`df.write.format("delta")`) requires the
-io.delta:delta-spark JAR, which `delta-spark`'s Python package fetches from
-Maven Central at session startup. That works fine on Databricks (JARs are
-preinstalled) and on any machine with normal internet access, but fails in
-network-restricted environments where only an explicit domain allowlist
-(PyPI, npm, GitHub, ...) is reachable and Maven Central is not.
+Two paths:
+- On Databricks (DATABRICKS_RUNTIME_VERSION set): native Spark Delta
+  (`df.write.format("delta")`). The runtime ships with the Delta JARs and
+  Unity Catalog integration pre-wired — no extra dependencies needed.
+- Locally / CI: delta-rs (`deltalake` PyPI package). JVM-free, reads the
+  same on-disk format, avoids Maven Central network requirements.
 
-`deltalake` (delta-rs) is a separate, JVM-free implementation of the Delta
-Lake protocol, installable from PyPI, used as the Delta engine inside
-Polars and DuckDB. It speaks the same table format on disk -- a Delta table
-written by delta-rs is fully readable by Spark/Databricks and vice versa.
-
-This module converts Spark DataFrames to/from Arrow (via pandas) at the
-read/write boundary so all transformation logic upstream stays in PySpark.
-
-On Databricks, replace calls to write_delta_table/read_delta_table with
-native `df.write.format("delta").save(path)` / `spark.read.format("delta").load(path)`
--- the transformation code that calls these functions does not change.
+All transformation logic above this module is unchanged between environments.
 """
 
+import os
 from pathlib import Path
 
-from deltalake import DeltaTable, write_deltalake
 from pyspark.sql import DataFrame, SparkSession
 
+_ON_DATABRICKS = bool(os.environ.get("DATABRICKS_RUNTIME_VERSION"))
 
-def write_delta_table(df: DataFrame, path: Path, mode: str = "append") -> int:
+
+# ── Databricks-native path ────────────────────────────────────────────────────
+
+def _write_native(df: DataFrame, path: Path, mode: str) -> int:
+    count = df.count()
+    df.write.format("delta").mode(mode).save(str(path))
+    return count
+
+
+def _read_native(spark: SparkSession, path: Path) -> DataFrame:
+    return spark.read.format("delta").load(str(path))
+
+
+def _exists_native(path: Path) -> bool:
+    # On Databricks, UC volume paths are FUSE-mounted POSIX paths.
+    return path.exists() and (path / "_delta_log").exists()
+
+
+# ── Local / CI path (delta-rs) ────────────────────────────────────────────────
+
+def _write_deltalake(df: DataFrame, path: Path, mode: str) -> int:
+    from deltalake import write_deltalake
     path.parent.mkdir(parents=True, exist_ok=True)
     pdf = df.toPandas()
     write_deltalake(str(path), pdf, mode=mode)
     return len(pdf)
 
 
-def _arrow_type_to_spark(arrow_type) -> object:
+def _arrow_type_to_spark(arrow_type):
     import pyarrow as pa
     from pyspark.sql import types as T
 
@@ -52,23 +63,41 @@ def _arrow_type_to_spark(arrow_type) -> object:
     return T.StringType()
 
 
-def read_delta_table(spark: SparkSession, path: Path) -> DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"No Delta table found at {path}")
-    dt = DeltaTable(str(path))
-    arrow_table = dt.to_pyarrow_table()
-
+def _read_deltalake(spark: SparkSession, path: Path) -> DataFrame:
+    from deltalake import DeltaTable
     from pyspark.sql import types as T
 
+    dt = DeltaTable(str(path))
+    arrow_table = dt.to_pyarrow_table()
     spark_schema = T.StructType(
-        [T.StructField(field.name, _arrow_type_to_spark(field.type), True) for field in arrow_table.schema]
+        [T.StructField(f.name, _arrow_type_to_spark(f.type), True) for f in arrow_table.schema]
     )
-
     pdf = arrow_table.to_pandas()
     pdf = pdf.astype(object).where(pdf.notna(), None)
-    records = pdf.to_dict("records")
-    return spark.createDataFrame(records, schema=spark_schema)
+    return spark.createDataFrame(pdf.to_dict("records"), schema=spark_schema)
+
+
+def _exists_deltalake(path: Path) -> bool:
+    return path.exists() and (path / "_delta_log").exists()
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def write_delta_table(df: DataFrame, path: Path, mode: str = "append") -> int:
+    if _ON_DATABRICKS:
+        return _write_native(df, path, mode)
+    return _write_deltalake(df, path, mode)
+
+
+def read_delta_table(spark: SparkSession, path: Path) -> DataFrame:
+    if not delta_table_exists(path):
+        raise FileNotFoundError(f"No Delta table found at {path}")
+    if _ON_DATABRICKS:
+        return _read_native(spark, path)
+    return _read_deltalake(spark, path)
 
 
 def delta_table_exists(path: Path) -> bool:
-    return path.exists() and (path / "_delta_log").exists()
+    if _ON_DATABRICKS:
+        return _exists_native(path)
+    return _exists_deltalake(path)

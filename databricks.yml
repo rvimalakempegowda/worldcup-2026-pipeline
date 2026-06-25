@@ -1,106 +1,169 @@
-# Databricks Asset Bundle definition for the World Cup 2026 pipeline.
+# Databricks Asset Bundle — World Cup 2026 pipeline.
 #
-# This is the deployment artifact that ties the bronze/silver/gold scripts
-# in this repo to scheduled Databricks Jobs, mirroring what the Airflow
-# DAGs do locally. In a Databricks-hosted deployment, either this bundle
-# or the Airflow DAGs (via DatabricksSubmitRunOperator) drive execution --
-# not both. The bundle is the natural choice when Databricks Workflows is
-# the orchestrator of record; Airflow is the natural choice when a single
-# orchestration layer needs to span multiple systems (this pipeline plus
-# other, non-Databricks workloads), which is the more common shape on a
-# data platform team and the reason this repo leads with Airflow.
+# Orchestrates bronze/silver/gold jobs via Databricks Workflows and hosts
+# the Streamlit dashboard as a Databricks App backed by Unity Catalog volumes.
 #
-# Deploy with:
+# Deploy:
 #   databricks bundle deploy -t dev
+#   databricks bundle deploy -t prod
+#
+# Run a job once (dev):
 #   databricks bundle run worldcup_live_job -t dev
+#
+# Prerequisites:
+#   1. A Unity Catalog catalog + schema (defaults: main / worldcup2026_dev)
+#   2. An External Volume or Managed Volume at the path in `volume` var
+#   3. databricks CLI >= 0.212 (`databricks --version`)
 
 bundle:
   name: worldcup-2026-pipeline
 
 variables:
-  data_root:
-    description: ADLS Gen2 root path for bronze/silver/gold tables
-    default: "abfss://worldcup@<storage_account>.dfs.core.windows.net"
+  catalog:
+    description: Unity Catalog catalog name
+    default: main
+  schema:
+    description: Unity Catalog schema (separate per target by default)
+    default: worldcup2026_dev
+  volume:
+    description: Unity Catalog volume name inside the schema
+    default: pipeline_data
+  ingestion_source:
+    description: "'wikipedia' for live scrape, 'fixture' for offline snapshot"
+    default: wikipedia
+
+# Derived path used by every task: /Volumes/<catalog>/<schema>/<volume>
+# Set via WORLDCUP_DATA_ROOT env var on each cluster so config.py picks it up
+# automatically without any code change.
 
 resources:
+
+  # ── Databricks App ────────────────────────────────────────────────────────
+  apps:
+    worldcup_dashboard:
+      name: worldcup-2026-dashboard
+      description: "World Cup 2026 live analytics — Streamlit on Databricks Apps"
+      source_code_path: dashboard
+
+  # ── Jobs ──────────────────────────────────────────────────────────────────
   jobs:
+
+    # Live pipeline: ingest → bronze → silver → gold, every 5 minutes.
+    # The run_ingestion step short-circuits on its own when no matches are
+    # live (same short-circuit logic as the Airflow DAG).
     worldcup_live_job:
-      name: "worldcup_live_pipeline"
+      name: worldcup_live_pipeline
       tags:
         project: worldcup2026
         layer: bronze-silver-gold
+
       schedule:
         quartz_cron_expression: "0 */5 * * * ?"
-        timezone_id: "UTC"
+        timezone_id: UTC
+
+      job_clusters:
+        - job_cluster_key: pipeline_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 1
+            spark_env_vars:
+              WORLDCUP_DATA_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}
+              WORLDCUP_SOURCE: ${var.ingestion_source}
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - requests==2.33.1
+              - beautifulsoup4==4.14.3
+
       tasks:
         - task_key: run_ingestion
-          spark_python_task:
-            python_file: ../ingestion/run_ingestion.py
+          job_cluster_key: pipeline_cluster
           environment_key: default
+          spark_python_task:
+            python_file: ingestion/run_ingestion.py
 
         - task_key: load_bronze
           depends_on:
             - task_key: run_ingestion
-          spark_python_task:
-            python_file: ../bronze/load_bronze.py
+          job_cluster_key: pipeline_cluster
           environment_key: default
+          spark_python_task:
+            python_file: bronze/load_bronze.py
 
         - task_key: transform_silver
           depends_on:
             - task_key: load_bronze
-          spark_python_task:
-            python_file: ../silver/transform_silver.py
+          job_cluster_key: pipeline_cluster
           environment_key: default
+          spark_python_task:
+            python_file: silver/transform_silver.py
 
         - task_key: build_gold
           depends_on:
             - task_key: transform_silver
-          spark_python_task:
-            python_file: ../gold/build_gold.py
+          job_cluster_key: pipeline_cluster
           environment_key: default
+          spark_python_task:
+            python_file: gold/build_gold.py
+
+    # Daily maintenance: refresh reference data, rebuild gold, quality checks.
+    worldcup_daily_maintenance_job:
+      name: worldcup_daily_maintenance
+      tags:
+        project: worldcup2026
+        layer: maintenance
+
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+
+      job_clusters:
+        - job_cluster_key: maintenance_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: Standard_DS3_v2
+            num_workers: 1
+            spark_env_vars:
+              WORLDCUP_DATA_ROOT: /Volumes/${var.catalog}/${var.schema}/${var.volume}
+              WORLDCUP_SOURCE: ${var.ingestion_source}
 
       environments:
         - environment_key: default
           spec:
             client: "1"
             dependencies:
-              - pyspark
-              - requests
-              - beautifulsoup4
+              - requests==2.33.1
+              - beautifulsoup4==4.14.3
 
-    worldcup_daily_maintenance_job:
-      name: "worldcup_daily_maintenance"
-      tags:
-        project: worldcup2026
-        layer: maintenance
-      schedule:
-        quartz_cron_expression: "0 0 6 * * ?"
-        timezone_id: "UTC"
       tasks:
         - task_key: refresh_reference_data
-          spark_python_task:
-            python_file: ../ingestion/run_ingestion.py
+          job_cluster_key: maintenance_cluster
           environment_key: default
+          spark_python_task:
+            python_file: ingestion/run_ingestion.py
 
         - task_key: rebuild_gold
           depends_on:
             - task_key: refresh_reference_data
-          spark_python_task:
-            python_file: ../gold/build_gold.py
+          job_cluster_key: maintenance_cluster
           environment_key: default
-
-      environments:
-        - environment_key: default
-          spec:
-            client: "1"
-            dependencies:
-              - pyspark
-              - requests
-              - beautifulsoup4
+          spark_python_task:
+            python_file: gold/build_gold.py
 
 targets:
   dev:
     mode: development
     default: true
+    variables:
+      schema: worldcup2026_dev
+      ingestion_source: fixture   # safe default for dev; override to wikipedia for live tests
+
   prod:
     mode: production
+    variables:
+      schema: worldcup2026
+      ingestion_source: wikipedia

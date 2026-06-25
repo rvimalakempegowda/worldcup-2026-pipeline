@@ -1,0 +1,25 @@
+# Databricks Apps manifest for the World Cup 2026 dashboard.
+#
+# Databricks Apps runs this command inside the source_code_path directory
+# (dashboard/). The app reads gold Delta tables from the UC volume path
+# set via the WORLDCUP_DATA_ROOT environment variable, which Databricks
+# injects from the app's environment configuration in the UI or via the
+# bundle deploy.
+#
+# Required env var (set in the Databricks App settings):
+#   WORLDCUP_DATA_ROOT=/Volumes/<catalog>/<schema>/<volume>
+
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port
+  - "8080"
+  - --server.headless
+  - "true"
+  - --server.enableCORS
+  - "false"
+
+env:
+  - name: WORLDCUP_DATA_ROOT
+    valueFrom: WORLDCUP_DATA_ROOT
